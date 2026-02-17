@@ -1,0 +1,202 @@
+-- Lumis-OS GUI Installer
+local sysPath = "/lumis/system/"
+local appsPath = "/lumis/apps/"
+
+-- Ensure directories exist
+if not fs.exists(sysPath) then fs.makeDir(sysPath) end
+if not fs.exists(appsPath) then fs.makeDir(appsPath) end
+
+print("Installing Lumis-GUI Kernel...")
+
+-- 1. THE GUI KERNEL
+local gui_kernel = [[
+-- Lumis-OS GUI Kernel
+local running = true
+local w, h = term.getSize()
+
+-- System Colors
+local col = {
+    bg = colors.lightBlue,
+    taskbar = colors.gray,
+    startBtn = colors.blue,
+    text = colors.white,
+    icon = colors.yellow
+}
+
+-- Load Apps List
+local function getApps()
+    local files = fs.list("/lumis/apps")
+    local apps = {}
+    -- Add built-ins
+    table.insert(apps, {name = "Shell", path = "shell"})
+    table.insert(apps, {name = "Lua", path = "lua"})
+    -- Add user apps
+    for _, file in ipairs(files) do
+        table.insert(apps, {name = file, path = "/lumis/apps/" .. file})
+    end
+    return apps
+end
+
+-- === DRAWING FUNCTIONS ===
+local function drawRect(x, y, w, h, color)
+    term.setBackgroundColor(color)
+    for i = 0, h-1 do
+        term.setCursorPos(x, y + i)
+        term.write(string.rep(" ", w))
+    end
+end
+
+local function drawText(x, y, text, bg, fg)
+    term.setCursorPos(x, y)
+    term.setBackgroundColor(bg)
+    term.setTextColor(fg)
+    term.write(text)
+end
+
+local function drawIcon(x, y, name)
+    -- Icon Body
+    drawRect(x, y, 5, 3, col.icon)
+    -- Icon Fold
+    drawText(x+4, y, " ", colors.orange, colors.white)
+    -- Label (Centered)
+    local label = name:sub(1, 5)
+    drawText(x, y+3, label, col.bg, colors.black)
+end
+
+local function drawTaskbar(menuOpen)
+    -- Bar
+    drawRect(1, h, w, 1, col.taskbar)
+    
+    -- Start Button
+    local startCol = menuOpen and colors.lime or col.startBtn
+    drawText(1, h, " LUMIS ", startCol, colors.white)
+    
+    -- Clock
+    local time = textutils.formatTime(os.time("local"), true)
+    drawText(w - #time, h, time .. " ", col.taskbar, colors.white)
+end
+
+local function drawMenu(apps)
+    local menuWidth = 12
+    local menuHeight = #apps + 2
+    local startY = h - menuHeight
+    
+    -- Shadow
+    drawRect(2, startY+1, menuWidth, menuHeight, colors.black)
+    -- Menu Body
+    drawRect(1, startY, menuWidth, menuHeight, colors.white)
+    
+    drawText(2, startY, "ALL APPS:", colors.white, colors.gray)
+    
+    for i, app in ipairs(apps) do
+        drawText(2, startY + i, app.name, colors.white, colors.black)
+    end
+    
+    drawText(2, startY + #apps + 1, "Shutdown", colors.white, colors.red)
+end
+
+local function drawDesktop()
+    term.setBackgroundColor(col.bg)
+    term.clear()
+    
+    -- Draw Desktop Icons (Grid Layout)
+    local apps = getApps()
+    local x, y = 2, 2
+    for i, app in ipairs(apps) do
+        if i <= 12 then -- Limit desktop icons for now
+            drawIcon(x, y, app.name)
+            x = x + 8
+            if x > w - 6 then
+                x = 2
+                y = y + 5
+            end
+        end
+    end
+end
+
+-- === MAIN LOOP ===
+local menuOpen = false
+
+while running do
+    local apps = getApps()
+    
+    -- Render Frame
+    drawDesktop()
+    drawTaskbar(menuOpen)
+    if menuOpen then drawMenu(apps) end
+    
+    -- Input Handling
+    local event, button, x, y = os.pullEvent("mouse_click")
+    
+    if event == "mouse_click" then
+        
+        -- CLICK: Taskbar / Start Button
+        if y == h then
+            if x <= 7 then -- Clicked "LUMIS"
+                menuOpen = not menuOpen
+            else
+                menuOpen = false -- Clicked elsewhere on taskbar
+            end
+            
+        -- CLICK: Inside Start Menu
+        elseif menuOpen and x <= 12 and y < h and y >= (h - (#apps + 2)) then
+            local relativeY = y - (h - (#apps + 2))
+            
+            if relativeY == #apps + 1 then
+                os.shutdown()
+            elseif apps[relativeY] then
+                -- Launch App
+                term.setBackgroundColor(colors.black)
+                term.setTextColor(colors.white)
+                term.clear()
+                term.setCursorPos(1,1)
+                shell.run(apps[relativeY].path)
+                menuOpen = false
+            end
+            
+        -- CLICK: Desktop Icons (Simple Hitbox)
+        elseif not menuOpen then
+            -- Check grid positions vaguely
+            -- (This is a simplified check for the demo)
+            local iconIndex = 0
+            local ix, iy = 2, 2
+            for i, app in ipairs(apps) do
+                if x >= ix and x <= ix+4 and y >= iy and y <= iy+2 then
+                    -- Hit!
+                    term.setBackgroundColor(colors.black)
+                    term.clear()
+                    term.setCursorPos(1,1)
+                    shell.run(app.path)
+                    break
+                end
+                ix = ix + 8
+                if ix > w - 6 then ix=2; iy=iy+5 end
+            end
+        else
+            menuOpen = false
+        end
+    end
+end
+]]
+
+-- Install the Kernel
+local f = fs.open(sysPath .. "kernel.lua", "w")
+f.write(gui_kernel)
+f.close()
+
+-- Create a demo app to test the icon system
+local demoApp = [[
+term.setBackgroundColor(colors.purple)
+term.clear()
+term.setCursorPos(1,1)
+print("Welcome to the App Window!")
+print("Click anywhere to close.")
+os.pullEvent("mouse_click")
+]]
+local f = fs.open(appsPath .. "demo_app.lua", "w")
+f.write(demoApp)
+f.close()
+
+print("GUI Installed! Rebooting...")
+sleep(1)
+os.reboot()
