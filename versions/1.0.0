@@ -1,0 +1,239 @@
+-- Lumis-OS Installer
+local root = "/lumis"
+local sys = root .. "/system"
+local apps = root .. "/apps"
+local user = root .. "/user"
+
+print("Installing Lumis-OS...")
+
+-- 1. Create Directories
+fs.makeDir(sys)
+fs.makeDir(apps)
+fs.makeDir(user)
+
+-- 2. Create Version File
+local f = fs.open(sys .. "/version", "w")
+f.write("1.0") -- Initial version
+f.close()
+
+-- 3. Create the Bootloader (startup.lua)
+-- This script handles the Auto-Update logic
+local bootloader = [[
+-- Lumis-OS Bootloader
+local sysPath = "/lumis/system/"
+local kernelPath = sysPath .. "kernel.lua"
+local versionPath = sysPath .. "version"
+
+-- URL Configuration (Converted to RAW for CC:Tweaked compatibility)
+-- NOTE: GitHub blob URLs must be converted to raw.githubusercontent.com
+local latestURL = "https://raw.githubusercontent.com/TheManOnPi/Lumis-OS/main/versions/latest"
+local downloadBase = "https://raw.githubusercontent.com/TheManOnPi/Lumis-OS/main/versions/"
+
+local function drawStatus(text)
+    term.setBackgroundColor(colors.black)
+    term.setTextColor(colors.blue)
+    term.clear()
+    term.setCursorPos(1,1)
+    print("Lumis-OS Bootloader")
+    print("-------------------")
+    print(text)
+end
+
+local function checkUpdate()
+    if not http then return end
+    drawStatus("Checking for updates...")
+    
+    local response = http.get(latestURL)
+    if not response then 
+        drawStatus("Update check failed (No Internet?)")
+        sleep(1)
+        return 
+    end
+    
+    local serverVer = response.readAll()
+    response.close()
+    
+    -- Clean whitespace
+    serverVer = serverVer:gsub("%s+", "")
+    
+    local currentVer = "0"
+    if fs.exists(versionPath) then
+        local f = fs.open(versionPath, "r")
+        currentVer = f.readAll()
+        f.close()
+    end
+    
+    if serverVer ~= currentVer then
+        drawStatus("Updating to v" .. serverVer .. "...")
+        
+        -- Download new Kernel
+        -- Assumes the file on repo is named "1.2.lua" or similar
+        local newKernel = http.get(downloadBase .. serverVer .. ".lua")
+        if newKernel then
+            local content = newKernel.readAll()
+            newKernel.close()
+            
+            local f = fs.open(kernelPath, "w")
+            f.write(content)
+            f.close()
+            
+            local v = fs.open(versionPath, "w")
+            v.write(serverVer)
+            v.close()
+            
+            drawStatus("Update Complete!")
+            sleep(1)
+        else
+            drawStatus("Failed to download update file.")
+            sleep(2)
+        end
+    end
+end
+
+-- Main Boot Process
+checkUpdate()
+
+if fs.exists(kernelPath) then
+    shell.run(kernelPath)
+else
+    print("Error: Kernel not found!")
+    print("Please reinstall Lumis-OS.")
+end
+]]
+
+local f = fs.open("startup", "w")
+f.write(bootloader)
+f.close()
+
+-- 4. Create the Kernel (The OS itself)
+local kernel = [[
+-- Lumis-OS Kernel
+local running = true
+local currentApp = nil
+
+-- === THE LUMIS API ===
+-- This API is available to all apps
+_G.Lumis = {}
+
+function Lumis.clear()
+    term.setBackgroundColor(colors.gray)
+    term.clear()
+    term.setCursorPos(1,1)
+end
+
+function Lumis.drawHeader(title)
+    term.setCursorPos(1,1)
+    term.setBackgroundColor(colors.blue)
+    term.setTextColor(colors.white)
+    term.clearLine()
+    print(" Lumis-OS | " .. title)
+    term.setBackgroundColor(colors.gray)
+end
+
+function Lumis.saveUserData(filename, data)
+    local f = fs.open("/lumis/user/" .. filename, "w")
+    f.write(textutils.serialize(data))
+    f.close()
+end
+
+function Lumis.loadUserData(filename)
+    if not fs.exists("/lumis/user/" .. filename) then return nil end
+    local f = fs.open("/lumis/user/" .. filename, "r")
+    local data = textutils.unserialize(f.readAll())
+    f.close()
+    return data
+end
+
+-- === APP LOADER ===
+local function loadApps()
+    local appList = {}
+    -- Add built-in apps
+    table.insert(appList, {name = "Browser", path = "internal_browser"})
+    table.insert(appList, {name = "Reboot", path = "internal_reboot"})
+    
+    -- Scan apps folder
+    local files = fs.list("/lumis/apps")
+    for _, file in ipairs(files) do
+        table.insert(appList, {name = file, path = "/lumis/apps/" .. file})
+    end
+    return appList
+end
+
+-- === BUILT-IN BROWSER ===
+local function runBrowser()
+    while true do
+        Lumis.clear()
+        Lumis.drawHeader("Web Browser")
+        term.setCursorPos(1, 3)
+        print("Enter URL:")
+        term.write("http://")
+        local input = read()
+        local url = "http://" .. input
+        
+        Lumis.clear()
+        Lumis.drawHeader("Loading...")
+        
+        if http then
+            local response = http.get(url)
+            if response then
+                local body = response.readAll()
+                response.close()
+                Lumis.clear()
+                Lumis.drawHeader(url)
+                print(string.sub(body, 1, 500) .. "...") -- Preview first 500 chars
+                print("\nPress Enter to return...")
+                read()
+            else
+                print("Failed to load URL.")
+                sleep(1)
+            end
+        else
+            print("HTTP API disabled in config.")
+            sleep(2)
+        end
+        return -- Exit browser after one use for now
+    end
+end
+
+-- === MAIN OS LOOP ===
+while running do
+    local apps = loadApps()
+    Lumis.clear()
+    Lumis.drawHeader("Home")
+    
+    print("\n Select an App:")
+    for i, app in ipairs(apps) do
+        print(" " .. i .. ". " .. app.name)
+    end
+    print("\n Q. Shutdown")
+    
+    term.setCursorPos(1, 12)
+    term.write("> ")
+    local input = read()
+    
+    if input:lower() == "q" then
+        os.shutdown()
+    elseif tonumber(input) then
+        local index = tonumber(input)
+        if apps[index] then
+            local selected = apps[index]
+            if selected.path == "internal_browser" then
+                runBrowser()
+            elseif selected.path == "internal_reboot" then
+                os.reboot()
+            else
+                -- Run Modular App
+                shell.run(selected.path)
+            end
+        end
+    end
+end
+]]
+
+local f = fs.open(sys .. "/kernel.lua", "w")
+f.write(kernel)
+f.close()
+
+print("Installation Complete! Rebooting...")
+sleep(1)
+os.reboot()
